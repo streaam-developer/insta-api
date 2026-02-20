@@ -10,7 +10,7 @@
  * 2. Fill in your Instagram credentials in .env
  */
 
-const { IgApiClient } = require('instagram-private-api');
+const { IgApiClient, IgCheckpointError } = require('instagram-private-api');
 const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
@@ -32,6 +32,10 @@ async function handleCheckpoint(ig) {
     console.log('  - Suspicious activity detected');
 
     try {
+        if (!ig.state.checkpoint) {
+            throw new Error('No checkpoint data available');
+        }
+
         // auto(true) will select the default challenge method and send the code
         const autoResult = await ig.challenge.auto(true);
         console.log(`Verification code sent via: ${autoResult?.step_data?.contact_point || 'the default method'}`);
@@ -115,8 +119,17 @@ async function login() {
             console.error(`\nLogin attempt ${attempts}/${maxAttempts} failed:`, errorMsg);
             
             // Check for checkpoint challenge
-            if (errorMsg.includes('checkpoint') || errorMsg.includes('challenge')) {
+            if (error instanceof IgCheckpointError || errorMsg.includes('checkpoint') || errorMsg.includes('challenge')) {
                 console.log('\nInstagram requires verification (checkpoint)');
+
+                // Set checkpoint info so challenge helpers know where to go
+                if (error instanceof IgCheckpointError && error?.checkpoint) {
+                    ig.state.checkpoint = error.checkpoint;
+                } else if (error.response?.body?.checkpoint_url) {
+                    ig.state.checkpoint = {
+                        api_path: error.response.body.checkpoint_url,
+                    };
+                }
                 
                 // Try to handle checkpoint
                 const handled = await handleCheckpoint(ig);
