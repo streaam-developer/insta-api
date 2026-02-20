@@ -18,6 +18,6 @@
   "dependencies": {
     "instagram-private-api": "^1.46.1",
     "dotenv": "^16.3.1",
-    "sleep-promise": "^10.0.0"
+    "sleep-promise": "^9.1.0"
   }
 }
