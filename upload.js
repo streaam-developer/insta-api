@@ -119,30 +119,10 @@ async function main() {
     // Get caption from command line or use default
     const caption = process.argv[3] || process.env.DEFAULT_CAPTION || '';
     
-    // Load session
-    const ig = new IgApiClient();
-    ig.state.generateDevice(process.env.IG_USERNAME);
-    
-    if (!fs.existsSync(SESSION_FILE)) {
-        console.error('No session file found. Please run login.js first!');
-        console.error('Usage: node login.js');
-        process.exit(1);
-    }
-    
     try {
-        console.log('Loading session...');
-        const sessionData = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
-        await ig.state.deserialize(sessionData);
-        
-        // Verify session is valid
-        try {
-            await ig.user.info(ig.state.cookieUserId);
-            console.log('Session is valid!');
-        } catch (e) {
-            console.error('Session expired. Please run login.js again!');
-            process.exit(1);
-        }
-        
+        // Reuse existing session when possible; fall back to fresh login
+        const ig = await login();
+
         // Upload the video as Reel
         const result = await uploadReel(ig, videoPath, caption);
         
