@@ -21,70 +21,41 @@ dotenv.config();
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
 /**
- * Handle Instagram checkpoint/challenge using the correct API
+ * Handle Instagram checkpoint/challenge (instagram-private-api v1.46+)
+ * Uses the challenge helper to automatically pick a verification method (email/SMS),
+ * sends the security code, and prompts the user to enter it.
  */
 async function handleCheckpoint(ig) {
     console.log('\n=== Instagram Checkpoint Required ===');
     console.log('Instagram is asking for verification. This happens when:');
     console.log('  - You login from a new device');
     console.log('  - Suspicious activity detected');
-    
+
     try {
-        // Get challenge state - this is available after login fails with checkpoint
-        const challenge = ig.state.challenge;
-        
-        if (!challenge) {
-            console.log('Challenge info not found. Let me try another method...');
-            
-            // Try to get challenge directly
-            const challengeApi = await ig.account.sendChallengeCode('0'); // 0 = email, 1 = SMS
-            console.log('Challenge API response:', challengeApi);
-            return false;
-        }
-        
-        console.log('\nChoose verification method:');
-        console.log('  1. Email - Code sent to your email');
-        console.log('  2. Phone - Code sent to your phone number');
-        
+        // auto(true) will select the default challenge method and send the code
+        const autoResult = await ig.challenge.auto(true);
+        console.log(`Verification code sent via: ${autoResult?.step_data?.contact_point || 'the default method'}`);
+
         const readline = require('readline').createInterface({
             input: process.stdin,
             output: process.stdout
         });
-        
-        return new Promise((resolve) => {
-            readline.question('Enter choice (1/2): ', async (choice) => {
+
+        const code = await new Promise((resolve) => {
+            readline.question('Enter the verification code you received: ', (input) => {
                 readline.close();
-                
-                try {
-                    // Send challenge code
-                    const method = choice === '1' ? '0' : '1';
-                    await ig.account.sendChallengeCode(method);
-                    console.log(`Code sent via ${choice === '1' ? 'email' : 'SMS'}`);
-                    
-                    const rl2 = require('readline').createInterface({
-                        input: process.stdin,
-                        output: process.stdout
-                    });
-                    
-                    rl2.question('Enter the code: ', async (code) => {
-                        rl2.close();
-                        
-                        try {
-                            // Verify the code
-                            const result = await ig.account.verifyChallengeCode(code);
-                            console.log('Verification successful!');
-                            resolve(true);
-                        } catch (e) {
-                            console.error('Invalid code. Please try again.');
-                            resolve(false);
-                        }
-                    });
-                } catch (e) {
-                    console.error('Failed to send verification code:', e.message);
-                    resolve(false);
-                }
+                resolve(input.trim());
             });
         });
+
+        const verifyResult = await ig.challenge.sendSecurityCode(code);
+        if (verifyResult?.logged_in_user) {
+            console.log('Verification successful!');
+            return true;
+        }
+
+        console.error('Verification failed; Instagram did not accept the code.');
+        return false;
     } catch (e) {
         console.error('Error in checkpoint handling:', e.message);
         return false;
