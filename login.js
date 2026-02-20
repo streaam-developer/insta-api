@@ -21,53 +21,74 @@ dotenv.config();
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
 /**
- * Handle Instagram checkpoint/challenge
+ * Handle Instagram checkpoint/challenge using the correct API
  */
-async function handleCheckpoint(ig, challengeUrl) {
+async function handleCheckpoint(ig) {
     console.log('\n=== Instagram Checkpoint Required ===');
     console.log('Instagram is asking for verification. This happens when:');
     console.log('  - You login from a new device');
     console.log('  - Suspicious activity detected');
-    console.log('\nChoose verification method:');
-    console.log('  1. Email - Code sent to your email');
-    console.log('  2. Phone - Code sent to your phone number');
     
-    const readline = require('readline').createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-    
-    return new Promise((resolve) => {
-        readline.question('Enter choice (1/2): ', async (choice) => {
-            readline.close();
+    try {
+        // Get challenge state - this is available after login fails with checkpoint
+        const challenge = ig.state.challenge;
+        
+        if (!challenge) {
+            console.log('Challenge info not found. Let me try another method...');
             
-            try {
-                const challenge = await ig.challenge.selectVerifyMethod(choice === '1' ? 1 : 0);
-                console.log(`Code sent via ${choice === '1' ? 'email' : 'SMS'}`);
-                
-                const rl2 = require('readline').createInterface({
-                    input: process.stdin,
-                    output: process.stdout
-                });
-                
-                rl2.question('Enter the code: ', async (code) => {
-                    rl2.close();
-                    
-                    try {
-                        await challenge.code(code);
-                        console.log('Verification successful!');
-                        resolve(true);
-                    } catch (e) {
-                        console.error('Invalid code. Please try again.');
-                        resolve(false);
-                    }
-                });
-            } catch (e) {
-                console.error('Failed to send verification code:', e.message);
-                resolve(false);
-            }
+            // Try to get challenge directly
+            const challengeApi = await ig.account.sendChallengeCode('0'); // 0 = email, 1 = SMS
+            console.log('Challenge API response:', challengeApi);
+            return false;
+        }
+        
+        console.log('\nChoose verification method:');
+        console.log('  1. Email - Code sent to your email');
+        console.log('  2. Phone - Code sent to your phone number');
+        
+        const readline = require('readline').createInterface({
+            input: process.stdin,
+            output: process.stdout
         });
-    });
+        
+        return new Promise((resolve) => {
+            readline.question('Enter choice (1/2): ', async (choice) => {
+                readline.close();
+                
+                try {
+                    // Send challenge code
+                    const method = choice === '1' ? '0' : '1';
+                    await ig.account.sendChallengeCode(method);
+                    console.log(`Code sent via ${choice === '1' ? 'email' : 'SMS'}`);
+                    
+                    const rl2 = require('readline').createInterface({
+                        input: process.stdin,
+                        output: process.stdout
+                    });
+                    
+                    rl2.question('Enter the code: ', async (code) => {
+                        rl2.close();
+                        
+                        try {
+                            // Verify the code
+                            const result = await ig.account.verifyChallengeCode(code);
+                            console.log('Verification successful!');
+                            resolve(true);
+                        } catch (e) {
+                            console.error('Invalid code. Please try again.');
+                            resolve(false);
+                        }
+                    });
+                } catch (e) {
+                    console.error('Failed to send verification code:', e.message);
+                    resolve(false);
+                }
+            });
+        });
+    } catch (e) {
+        console.error('Error in checkpoint handling:', e.message);
+        return false;
+    }
 }
 
 async function login() {
@@ -119,32 +140,25 @@ async function login() {
             
         } catch (error) {
             attempts++;
-            console.error(`\nLogin attempt ${attempts}/${maxAttempts} failed:`, error.message);
+            const errorMsg = error.response?.body?.message || error.message;
+            console.error(`\nLogin attempt ${attempts}/${maxAttempts} failed:`, errorMsg);
             
             // Check for checkpoint challenge
-            if (error.message.includes('checkpoint') || error.message.includes('challenge')) {
+            if (errorMsg.includes('checkpoint') || errorMsg.includes('challenge')) {
                 console.log('\nInstagram requires verification (checkpoint)');
                 
-                try {
-                    // Get challenge info
-                    const challenge = await ig.challenge.getChallenge();
-                    console.log('Challenge type:', challenge.type);
-                    console.log('Challenge URL:', challenge.url);
-                    
-                    // Try to handle checkpoint
-                    const handled = await handleCheckpoint(ig, challenge.url);
-                    if (handled) {
-                        // After verification, try to login again
-                        console.log('\nRetrying login after verification...');
-                        continue;
-                    }
-                } catch (e) {
-                    console.error('Failed to handle checkpoint:', e.message);
+                // Try to handle checkpoint
+                const handled = await handleCheckpoint(ig);
+                if (handled) {
+                    console.log('\nRetrying login after verification...');
+                    continue;
+                } else {
+                    console.log('\nCould not handle checkpoint automatically.');
                 }
             }
             
             // Handle 2FA
-            if (error.message.includes('two-factor')) {
+            if (errorMsg.includes('two-factor')) {
                 console.log('\n=== Two-Factor Authentication Required ===');
                 
                 const readline = require('readline').createInterface({
@@ -176,12 +190,14 @@ async function login() {
             }
             
             if (attempts >= maxAttempts) {
-                console.log('\nMax login attempts reached.');
-                console.log('\nPossible solutions:');
-                console.log('  1. Login via Instagram app on your phone first');
-                console.log('  2. Wait 24-48 hours before retrying');
-                console.log('  3. Use a different IP address');
-                console.log('  4. Disable 2FA temporarily');
+                console.log('\n=== Manual Verification Required ===');
+                console.log('Instagram has blocked automated login. You need to verify manually.');
+                console.log('\nPlease do the following:');
+                console.log('  1. Login to Instagram on your phone');
+                console.log('  2. Check for a security notification/email');
+                console.log('  3. Approve the new device login');
+                console.log('  4. Wait 30 minutes, then try again');
+                console.log('\nOr try deleting session.json and running login.js again.');
                 throw error;
             }
             
