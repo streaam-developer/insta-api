@@ -20,6 +20,56 @@ dotenv.config();
 
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
+/**
+ * Handle Instagram checkpoint/challenge
+ */
+async function handleCheckpoint(ig, challengeUrl) {
+    console.log('\n=== Instagram Checkpoint Required ===');
+    console.log('Instagram is asking for verification. This happens when:');
+    console.log('  - You login from a new device');
+    console.log('  - Suspicious activity detected');
+    console.log('\nChoose verification method:');
+    console.log('  1. Email - Code sent to your email');
+    console.log('  2. Phone - Code sent to your phone number');
+    
+    const readline = require('readline').createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    
+    return new Promise((resolve) => {
+        readline.question('Enter choice (1/2): ', async (choice) => {
+            readline.close();
+            
+            try {
+                const challenge = await ig.challenge.selectVerifyMethod(choice === '1' ? 1 : 0);
+                console.log(`Code sent via ${choice === '1' ? 'email' : 'SMS'}`);
+                
+                const rl2 = require('readline').createInterface({
+                    input: process.stdin,
+                    output: process.stdout
+                });
+                
+                rl2.question('Enter the code: ', async (code) => {
+                    rl2.close();
+                    
+                    try {
+                        await challenge.code(code);
+                        console.log('Verification successful!');
+                        resolve(true);
+                    } catch (e) {
+                        console.error('Invalid code. Please try again.');
+                        resolve(false);
+                    }
+                });
+            } catch (e) {
+                console.error('Failed to send verification code:', e.message);
+                resolve(false);
+            }
+        });
+    });
+}
+
 async function login() {
     const ig = new IgApiClient();
     
@@ -49,37 +99,96 @@ async function login() {
     
     console.log('Logging in to Instagram...');
     
-    // Perform login
-    try {
-        // If 2FA is enabled, you need to handle it manually
-        await ig.account.login(process.env.IG_USERNAME, process.env.IG_PASSWORD);
-        console.log('Login successful!');
-        
-        // Save session to file
-        const sessionData = await ig.state.serialize();
-        fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData));
-        console.log(`Session saved to ${SESSION_FILE}`);
-        
-        return ig;
-    } catch (error) {
-        console.error('Login failed:', error.message);
-        
-        if (error.message.includes('Two-factor code')) {
-            console.log('\nTwo-factor authentication is required.');
-            console.log('Please enable 2FA on your Instagram account or use an app that generates codes.');
-        } else if (error.message.includes('challenge')) {
-            console.log('\nInstagram is showing a challenge (verification) page.');
-            console.log('This usually happens when:');
-            console.log('  - You logged in from a new device');
-            console.log('  - Instagram detected suspicious activity');
-            console.log('  - Your account has been flagged');
-            console.log('\nTry:');
-            console.log('  1. Logout and login via Instagram app first');
-            console.log('  2. Disable 2FA temporarily');
-            console.log('  3. Wait a few hours and try again');
+    // Perform login with retry logic
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
+        try {
+            const loginResult = await ig.account.login(process.env.IG_USERNAME, process.env.IG_PASSWORD);
+            console.log('Login successful!');
+            console.log('User ID:', loginResult.pk);
+            console.log('Username:', loginResult.username);
+            
+            // Save session to file
+            const sessionData = await ig.state.serialize();
+            fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData));
+            console.log(`Session saved to ${SESSION_FILE}`);
+            
+            return ig;
+            
+        } catch (error) {
+            attempts++;
+            console.error(`\nLogin attempt ${attempts}/${maxAttempts} failed:`, error.message);
+            
+            // Check for checkpoint challenge
+            if (error.message.includes('checkpoint') || error.message.includes('challenge')) {
+                console.log('\nInstagram requires verification (checkpoint)');
+                
+                try {
+                    // Get challenge info
+                    const challenge = await ig.challenge.getChallenge();
+                    console.log('Challenge type:', challenge.type);
+                    console.log('Challenge URL:', challenge.url);
+                    
+                    // Try to handle checkpoint
+                    const handled = await handleCheckpoint(ig, challenge.url);
+                    if (handled) {
+                        // After verification, try to login again
+                        console.log('\nRetrying login after verification...');
+                        continue;
+                    }
+                } catch (e) {
+                    console.error('Failed to handle checkpoint:', e.message);
+                }
+            }
+            
+            // Handle 2FA
+            if (error.message.includes('two-factor')) {
+                console.log('\n=== Two-Factor Authentication Required ===');
+                
+                const readline = require('readline').createInterface({
+                    input: process.stdin,
+                    output: process.stdout
+                });
+                
+                const code = await new Promise((resolve) => {
+                    readline.question('Enter 2FA code from your authenticator app: ', resolve);
+                });
+                readline.close();
+                
+                // Try login with 2FA code
+                try {
+                    const loginResult = await ig.account.login(process.env.IG_USERNAME, process.env.IG_PASSWORD, {
+                        verificationCode: code,
+                        trustThisDevice: '1',
+                    });
+                    console.log('Login successful with 2FA!');
+                    
+                    const sessionData = await ig.state.serialize();
+                    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData));
+                    console.log(`Session saved to ${SESSION_FILE}`);
+                    
+                    return ig;
+                } catch (e) {
+                    console.error('2FA login failed:', e.message);
+                }
+            }
+            
+            if (attempts >= maxAttempts) {
+                console.log('\nMax login attempts reached.');
+                console.log('\nPossible solutions:');
+                console.log('  1. Login via Instagram app on your phone first');
+                console.log('  2. Wait 24-48 hours before retrying');
+                console.log('  3. Use a different IP address');
+                console.log('  4. Disable 2FA temporarily');
+                throw error;
+            }
+            
+            // Wait before retry
+            console.log('Waiting 5 seconds before retry...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
         }
-        
-        throw error;
     }
 }
 
