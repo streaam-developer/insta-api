@@ -1,17 +1,18 @@
 /**
- * Instagram Video Upload Script
- * This script uploads a video to Instagram using a saved session.
+ * Instagram Reel Upload Script
+ * This script uploads a video to Instagram as a Reel using a saved session.
  * 
  * Usage: node upload.js <video_path> [caption]
- * Example: node upload.js ./video.mp4 "My awesome video #instagram"
+ * Example: node upload.js ./video.mp4 "My awesome reel #instagram #reels"
  * 
  * Requirements:
  * 1. Run login.js first to create session.json
- * 2. Video must meet Instagram requirements:
- *    - Duration: 3 seconds to 60 seconds (or up to 10 minutes for some accounts)
+ * 2. Video must meet Instagram Reels requirements:
+ *    - Duration: 3 seconds to 90 seconds
  *    - Format: MP4 or MOV
  *    - Codec: H.264
  *    - Size: Max 650MB
+ *    - Aspect ratio: 9:16 (vertical) works best for Reels
  */
 
 const { IgApiClient } = require('instagram-private-api');
@@ -24,13 +25,13 @@ const { login, SESSION_FILE } = require('./login');
 dotenv.config();
 
 /**
- * Upload video to Instagram
+ * Upload video as Instagram Reel
  * @param {IgApiClient} ig - Logged in Instagram client
  * @param {string} videoPath - Path to the video file
- * @param {string} caption - Caption for the post
+ * @param {string} caption - Caption for the reel
  */
-async function uploadVideo(ig, videoPath, caption = '') {
-    console.log(`Preparing to upload video: ${videoPath}`);
+async function uploadReel(ig, videoPath, caption = '') {
+    console.log(`Preparing to upload reel: ${videoPath}`);
     
     // Check if video file exists
     if (!fs.existsSync(videoPath)) {
@@ -41,22 +42,15 @@ async function uploadVideo(ig, videoPath, caption = '') {
     const videoDuration = await getVideoDuration(videoPath);
     
     console.log(`Video duration: ${videoDuration.toFixed(2)} seconds`);
+    console.log(`Video size: ${(videoBuffer.length / (1024 * 1024)).toFixed(2)} MB`);
     
-    // Create publish service
-    const publishService = ig.publish.video();
+    // Create reel video publish service
+    const publishService = ig.publish.reelVideo();
     
-    // Configure video upload
+    // Configure video
     publishService.configureVideo({
         video: videoBuffer,
-        duration: videoDuration * 1000, // Convert to milliseconds
-    });
-    
-    // Configure cover image (first frame)
-    // Note: For production, you might want to extract a proper cover frame
-    // Using a simple approach here - in production, use ffmpeg to extract frame
-    publishService.configureCoverFrame({
-        // Placeholder - in production extract actual frame
-        coverFrame: Buffer.alloc(1),
+        duration: Math.round(videoDuration * 1000), // Convert to milliseconds
     });
     
     // Add caption if provided
@@ -66,10 +60,17 @@ async function uploadVideo(ig, videoPath, caption = '') {
         });
     }
     
-    console.log('Uploading video...');
+    // Add additional options for Reels
+    publishService.configureReelOptions({
+        title: caption || '',
+        // These options help with reach and discovery
+        is_reel: true,
+    });
+    
+    console.log('Uploading as Reel...');
     const result = await publishService.start();
     
-    console.log('Upload successful!');
+    console.log('Reel upload successful!');
     console.log('Media ID:', result.media.id);
     console.log('Code:', result.media.code);
     
@@ -85,19 +86,20 @@ async function uploadVideo(ig, videoPath, caption = '') {
 async function getVideoDuration(videoPath) {
     // Simple estimation based on file size
     // For accurate duration, you should use ffprobe or similar
-    // This is a rough estimate - mp4 files typically have ~1MB per second at 720p
     
     const stats = fs.statSync(videoPath);
     const fileSizeMB = stats.size / (1024 * 1024);
     
-    // Rough estimate: 1MB ≈ 1 second for typical Instagram video
-    // This is not accurate - for production, use ffprobe
     console.log(`Video file size: ${fileSizeMB.toFixed(2)} MB`);
-    console.log('Note: Using estimated duration. For accurate duration, install ffprobe.');
     
-    // Return a reasonable default for Instagram
-    // Instagram requires minimum 3 seconds
-    return Math.max(3, fileSizeMB);
+    // For accurate duration, install ffprobe and use:
+    // const ffprobe = require('ffprobe');
+    // const info = await ffprobe(videoPath);
+    // return info.streams[0].duration;
+    
+    // Rough estimate: 1MB ≈ 1 second for typical video
+    // Minimum 3 seconds for Reels
+    return Math.max(3, Math.min(90, fileSizeMB));
 }
 
 /**
@@ -109,7 +111,8 @@ async function main() {
     
     if (!videoPath) {
         console.log('Usage: node upload.js <video_path> [caption]');
-        console.log('Example: node upload.js ./video.mp4 "My awesome video #instagram"');
+        console.log('Example: node upload.js ./video.mp4 "My awesome reel #instagram"');
+        console.log('\nNote: Video will be uploaded as Instagram Reel');
         process.exit(1);
     }
     
@@ -140,11 +143,11 @@ async function main() {
             process.exit(1);
         }
         
-        // Upload the video
-        const result = await uploadVideo(ig, videoPath, caption);
+        // Upload the video as Reel
+        const result = await uploadReel(ig, videoPath, caption);
         
-        console.log('\n=== Upload Complete ===');
-        console.log(`View on Instagram: https://www.instagram.com/p/${result.media.code}/`);
+        console.log('\n=== Reel Upload Complete ===');
+        console.log(`View on Instagram: https://www.instagram.com/reel/${result.media.code}/`);
         
     } catch (error) {
         console.error('Upload failed:', error.message);
@@ -152,7 +155,7 @@ async function main() {
         if (error.message.includes('Upload failed')) {
             console.log('\nCommon issues:');
             console.log('  - Video format not supported');
-            console.log('  - Video too long or too short');
+            console.log('  - Video duration not valid (3-90 seconds for Reels)');
             console.log('  - Video file too large');
             console.log('  - Network connection problems');
         }
@@ -166,4 +169,4 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { uploadVideo };
+module.exports = { uploadReel };
