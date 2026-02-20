@@ -136,7 +136,7 @@ async function main() {
         
         // Verify session is valid
         try {
-            await ig.user.info();
+            await ig.user.info(ig.state.cookieUserId);
             console.log('Session is valid!');
         } catch (e) {
             console.error('Session expired. Please run login.js again!');

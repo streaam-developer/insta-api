@@ -105,13 +105,13 @@ async function login() {
             await ig.state.deserialize(sessionData);
             console.log('Session loaded successfully!');
             
-            // Test if session is still valid
+            // Test if session is still valid by querying the current user
             try {
-                await ig.user.info();
+                await ig.user.info(ig.state.cookieUserId);
                 console.log('Session is valid! You are logged in.');
                 return ig;
             } catch (e) {
-                console.log('Session expired. Need to login again...');
+                console.log('Session expired or invalid. Need to login again...');
             }
         } catch (e) {
             console.log('Could not load session. Will login fresh...');
