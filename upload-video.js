@@ -1,193 +1,256 @@
-const { IgApiClient } = require('instagram-private-api');
-const fs = require('fs');
-const path = require('path');
-const { loadSession, login } = require('./login');
+const fs = require("fs");
+const path = require("path");
+const { S3Client, ListObjectsV2Command, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { IgApiClient } = require("instagram-private-api");
+const { loadConfig, getSessionFilePath, loginSingleAccount } = require("./login");
 
-// Configuration - set these via environment variables or update directly
-const USERNAME = process.env.INSTAGRAM_USERNAME || 'your_username';
-const PASSWORD = process.env.INSTAGRAM_PASSWORD || 'your_password';
+const ROOT_DIR = __dirname;
 
-// Video path - update this to your video file path
-const VIDEO_PATH = process.env.VIDEO_PATH || './video.mp4';
-
-// Caption for the post
-const CAPTION = process.env.CAPTION || 'Uploaded via Instagram Private API';
-
-// Session directory
-const SESSION_DIR = path.join(__dirname, 'sessions');
-
-/**
- * Get session file path for a username
- */
-function getSessionPath(username) {
-  return path.join(SESSION_DIR, `${username}.json`);
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
 }
 
-/**
- * Load session from file and restore IG client
- */
-async function getIgClient(username) {
+function getUploadStateFilePath(config, username) {
+  const stateDir = path.join(ROOT_DIR, config.upload.state_dir || "state");
+  ensureDir(stateDir);
+  return path.join(stateDir, `uploaded-${username}.json`);
+}
+
+function readJsonIfExists(filePath, fallback) {
+  if (!fs.existsSync(filePath)) {
+    return fallback;
+  }
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function saveJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+function isVideoObject(item) {
+  const key = item.Key || "";
+  const lowered = key.toLowerCase();
+  return (
+    lowered.endsWith(".mp4") ||
+    lowered.endsWith(".mov") ||
+    lowered.endsWith(".m4v") ||
+    lowered.endsWith(".webm")
+  );
+}
+
+async function listAllVideosFromR2(s3, bucket, prefix) {
+  const items = [];
+  let continuationToken;
+
+  do {
+    const response = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix || "",
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    const contents = response.Contents || [];
+    for (const item of contents) {
+      if (isVideoObject(item)) {
+        items.push(item);
+      }
+    }
+
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  items.sort((a, b) => {
+    const aTime = a.LastModified ? new Date(a.LastModified).getTime() : 0;
+    const bTime = b.LastModified ? new Date(b.LastModified).getTime() : 0;
+    return aTime - bTime;
+  });
+
+  return items;
+}
+
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function downloadR2ObjectToBuffer(s3, bucket, key) {
+  const response = await s3.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    })
+  );
+
+  if (!response.Body) {
+    throw new Error(`Empty body returned for object: ${key}`);
+  }
+
+  return streamToBuffer(response.Body);
+}
+
+async function createIgFromSession(config, username) {
+  const sessionFilePath = getSessionFilePath(config, username);
+  if (!fs.existsSync(sessionFilePath)) {
+    await loginSingleAccount({
+      username,
+      password: config.instagram.password,
+      config,
+    });
+  }
+
   const ig = new IgApiClient();
   ig.state.generateDevice(username);
-  
-  const sessionPath = getSessionPath(username);
-  
-  if (!fs.existsSync(sessionPath)) {
-    console.log('No session found. Please run login.js first!');
-    return null;
-  }
-  
-  const savedSession = JSON.parse(fs.readFileSync(sessionPath, 'utf-8'));
-  
-  // Restore session state
-  ig.state.deviceString = savedSession.deviceString;
-  ig.state.deviceId = savedSession.deviceId;
-  ig.state.uuid = savedSession.uuid;
-  ig.state.phoneId = savedSession.phoneId;
-  ig.state.advertisingId = savedSession.advertisingId;
-  
   try {
-    // Try to use the session
-    await ig.user.session.get();
-    console.log('Session restored successfully!');
-    return ig;
-  } catch (e) {
-    console.log('Session expired, please login again...');
-    return await login(USERNAME, PASSWORD);
-  }
-}
-
-/**
- * Upload video to Instagram
- */
-async function uploadVideo(ig, videoPath, caption) {
-  // Check if video file exists
-  if (!fs.existsSync(videoPath)) {
-    throw new Error(`Video file not found: ${videoPath}`);
-  }
-  
-  console.log(`Reading video file: ${videoPath}`);
-  const videoBuffer = fs.readFileSync(videoPath);
-  
-  // Get video duration (using file stats as estimate)
-  const stats = fs.statSync(videoPath);
-  console.log(`Video size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-  
-  // Upload video
-  console.log('Uploading video...');
-  
-  const publishProcess = ig.publish.video({
-    video: videoBuffer,
-    caption: caption,
-    coverImage: await getVideoThumbnail(videoPath)
-  });
-  
-  return new Promise((resolve, reject) => {
-    // The video upload process in instagram-private-api
-    // returns a stream-like process
-    publishProcess.on('progress', (progress) => {
-      console.log(`Upload progress: ${progress}%`);
-    });
-    
-    publishProcess.then((result) => {
-      console.log('Upload successful!');
-      resolve(result);
-    }).catch((error) => {
-      console.error('Upload failed:', error.message);
-      reject(error);
-    });
-  });
-}
-
-/**
- * Create a simple thumbnail from video
- * Note: In production, you'd want to extract a real thumbnail
- * For now, we'll use a placeholder approach
- */
-async function getVideoThumbnail(videoPath) {
-  // Read first frame as thumbnail (placeholder)
-  // In a real implementation, you'd use ffmpeg to extract a frame
-  try {
-    // Create a simple placeholder thumbnail (1x1 transparent pixel PNG)
-    // This is a minimal valid PNG file
-    const placeholderThumbnail = Buffer.from([
-      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-      0x00, 0x00, 0x00, 0x0D, // IHDR length
-      0x49, 0x48, 0x44, 0x52, // IHDR
-      0x00, 0x00, 0x00, 0x01, // width: 1
-      0x00, 0x00, 0x00, 0x01, // height: 1
-      0x08, 0x06, 0x00, 0x00, 0x00, // bit depth, color type, compression, filter, interlace
-      0x1F, 0x15, 0xC4, 0x89, // CRC
-      0x00, 0x00, 0x00, 0x0A, // IDAT length
-      0x49, 0x44, 0x41, 0x54, // IDAT
-      0x78, 0x9C, 0x62, 0x00, 0x02, 0x00, 0x00, 0x05, 0x00, 0x01, // compressed data
-      0x0D, 0x0A, 0x2D, 0xB4, // CRC
-      0x00, 0x00, 0x00, 0x00, // IEND length
-      0x49, 0x45, 0x4E, 0x44, // IEND
-      0xAE, 0x42, 0x60, 0x82  // CRC
-    ]);
-    
-    return placeholderThumbnail;
+    const session = JSON.parse(fs.readFileSync(sessionFilePath, "utf8"));
+    await ig.state.deserialize(session);
+    await ig.account.currentUser();
   } catch (error) {
-    console.error('Error creating thumbnail:', error.message);
-    throw error;
+    await loginSingleAccount({
+      username,
+      password: config.instagram.password,
+      config,
+    });
+    const session = JSON.parse(fs.readFileSync(sessionFilePath, "utf8"));
+    await ig.state.deserialize(session);
+    await ig.account.currentUser();
   }
+
+  return ig;
 }
 
-/**
- * Main function
- */
-async function main() {
-  console.log('=== Instagram Video Upload Script ===\n');
-  
-  // Check username
-  if (USERNAME === 'your_username') {
-    console.log('Please set your Instagram username:');
-    console.log('  - Edit the USERNAME variable in this file');
-    console.log('  - Or set environment variable: INSTAGRAM_USERNAME');
-    process.exit(1);
-  }
-  
-  // Check video path
-  if (!fs.existsSync(VIDEO_PATH)) {
-    console.log(`Video file not found: ${VIDEO_PATH}`);
-    console.log('\nPlease set your video path:');
-    console.log('  - Edit the VIDEO_PATH variable in this file');
-    console.log('  - Or set environment variable: VIDEO_PATH');
-    console.log('\nExample: VIDEO_PATH=./my-video.mp4 node upload-video.js');
-    process.exit(1);
-  }
-  
-  try {
-    // Get or restore IG client
-    console.log('Initializing Instagram client...');
-    const ig = await getIgClient(USERNAME);
-    
-    if (!ig) {
-      console.error('Failed to initialize Instagram client');
-      process.exit(1);
+function getCoverJpegBuffer() {
+  // 1x1 JPEG
+  return Buffer.from(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCABkAGQDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAVEQEBAAAAAAAAAAAAAAAAAAAAAv/aAAwDAQACEAMQAAAB4AAf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwFH/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwFH/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9k=",
+    "base64"
+  );
+}
+
+async function publishAsReel(ig, videoBuffer, caption) {
+  const coverImage = getCoverJpegBuffer();
+
+  const attempts = [
+    { video: videoBuffer, coverImage, caption, isClip: true },
+    { video: videoBuffer, coverImage, caption, post: "reel" },
+    { video: videoBuffer, coverImage, caption },
+  ];
+
+  let lastError;
+  for (const payload of attempts) {
+    try {
+      const result = await ig.publish.video(payload);
+      return result;
+    } catch (error) {
+      lastError = error;
     }
-    
-    // Upload video
-    console.log(`\nUploading video: ${path.basename(VIDEO_PATH)}`);
-    console.log(`Caption: "${CAPTION}"\n`);
-    
-    const result = await uploadVideo(ig, VIDEO_PATH, CAPTION);
-    
-    console.log('\n=== Upload Complete ===');
-    console.log(`Media ID: ${result.media.id}`);
-    console.log(`Code: ${result.media.code}`);
-    console.log(`Link: https://www.instagram.com/p/${result.media.code}/`);
-    
-  } catch (error) {
-    console.error('\nUpload failed:', error.message);
-    process.exit(1);
+  }
+
+  throw lastError || new Error("Unknown publish error.");
+}
+
+function pickNextUnpostedVideo(videoItems, uploadedSet) {
+  for (const item of videoItems) {
+    if (!uploadedSet.has(item.Key)) {
+      return item;
+    }
+  }
+  return null;
+}
+
+async function run() {
+  const config = loadConfig();
+  const usernameArg = process.argv[2];
+  const username = usernameArg || config.instagram.usernames[0];
+
+  if (!username) {
+    throw new Error("No username provided. Add instagram.usernames in config.json.");
+  }
+
+  const r2 = config.r2_config || {};
+  if (!r2.endpoint_url || !r2.aws_access_key_id || !r2.aws_secret_access_key || !r2.bucket_name) {
+    throw new Error("config.json: r2_config is incomplete.");
+  }
+
+  const statePath = getUploadStateFilePath(config, username);
+  const state = readJsonIfExists(statePath, { username, uploaded_keys: [] });
+  const uploadedSet = new Set(state.uploaded_keys || []);
+
+  const s3 = new S3Client({
+    region: "auto",
+    endpoint: r2.endpoint_url,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: r2.aws_access_key_id,
+      secretAccessKey: r2.aws_secret_access_key,
+    },
+  });
+
+  const videos = await listAllVideosFromR2(s3, r2.bucket_name, r2.prefix || "");
+  if (videos.length === 0) {
+    console.log("No video files found in R2 bucket.");
+    return;
+  }
+
+  const nextVideo = pickNextUnpostedVideo(videos, uploadedSet);
+  if (!nextVideo) {
+    console.log("All detected R2 videos are already uploaded for this account.");
+    return;
+  }
+
+  console.log(`[${username}] Next video: ${nextVideo.Key}`);
+  const ig = await createIgFromSession(config, username);
+  const videoBuffer = await downloadR2ObjectToBuffer(s3, r2.bucket_name, nextVideo.Key);
+  const caption =
+    config.upload.caption ||
+    config.upload.default_caption ||
+    `Reel: ${path.basename(nextVideo.Key)}`;
+
+  const result = await publishAsReel(ig, videoBuffer, caption);
+  uploadedSet.add(nextVideo.Key);
+
+  const newState = {
+    username,
+    uploaded_keys: Array.from(uploadedSet),
+    last_uploaded: {
+      key: nextVideo.Key,
+      at: new Date().toISOString(),
+      media_id: result?.media?.id || null,
+      code: result?.media?.code || null,
+    },
+  };
+  saveJson(statePath, newState);
+
+  console.log("Upload complete.");
+  if (result?.media?.code) {
+    console.log(`Instagram URL: https://www.instagram.com/reel/${result.media.code}/`);
   }
 }
 
-// Run if called directly
 if (require.main === module) {
-  main();
+  run().catch((error) => {
+    const text = `${error?.message || ""} ${error?.response?.body?.message || ""}`.toLowerCase();
+    if (text.includes("checkpoint_required") || text.includes("two_factor_required")) {
+      const usernameArg = process.argv[2] ? ` ${process.argv[2]}` : "";
+      console.error(
+        `Upload blocked by Instagram security check. Run "node login.js${usernameArg}" and complete verification, then rerun upload.`
+      );
+    } else {
+      console.error(`Upload failed: ${error.message}`);
+    }
+    process.exit(1);
+  });
 }
 
-module.exports = { uploadVideo, getIgClient };
+module.exports = {
+  run,
+  listAllVideosFromR2,
+  pickNextUnpostedVideo,
+  publishAsReel,
+};

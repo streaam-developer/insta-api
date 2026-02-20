@@ -1,0 +1,16 @@
+{
+  "name": "insta-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Instagram multi-account session manager and R2 reel uploader",
+  "main": "index.js",
+  "scripts": {
+    "login:all": "node login.js",
+    "upload:one": "node upload-video.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.872.0",
+    "instagram-private-api": "^1.46.1",
+    "mime-types": "^2.1.35"
+  }
+}

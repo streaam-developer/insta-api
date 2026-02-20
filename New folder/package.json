@@ -1,0 +1,12 @@
+{
+  "name": "instagram-upload-script",
+  "version": "1.0.0",
+  "description": "Script to login to Instagram and upload video using private API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["instagram", "api", "upload", "video"],
+  "author": "",
+  "license": "ISC"
+}
