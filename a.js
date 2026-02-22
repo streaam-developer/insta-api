@@ -29,7 +29,11 @@ async function createAccount() {
             first_name: "Test",
             // Additional parameters now required by Instagram
             phone_number: "",  // Can be empty string
-            gender: 0,  // 0 = unknown, 1 = male, 2 = female
+            gender: 1,  // 0 = unknown, 1 = male, 2 = female
+            day: 1,
+            month: 1,
+            year: 1990,
+            signup_reason: "self_first_device",
         });
 
         console.log("✅ Account Created!");
