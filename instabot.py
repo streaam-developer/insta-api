@@ -1,5 +1,6 @@
 #imports
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import ui
 from selenium.webdriver.support import expected_conditions as EC
@@ -94,7 +95,7 @@ class instaBot:
 
             try:
                 #and we copy and rename the image to the appropiate folder
-                os.replace(location, "\Pictures\Instagram profile image\\descarga.jpg")
+                os.replace(location, r"\Pictures\Instagram profile image\descarga.jpg")
 
             except: 
                 pass
@@ -107,7 +108,8 @@ class instaBot:
         self.put_data_in_table()
         
         #we set the driver
-        self.driver =webdriver.Chrome("chromedriver")
+        service = Service("chromedriver")
+        self.driver = webdriver.Chrome(service=service)
 
         #we call the create_account function
         self.create_account()
@@ -251,7 +253,8 @@ random_hour= str(randint(1,23))+":"+str(randint(1,58))
 
 #All the below will execute the functions code 
 #(previously logging in) once a day at the random hour set above
-driver=webdriver.Chrome("chromedriver")
+service2 = Service("chromedriver")
+driver=webdriver.Chrome(service=service2)
 schedule.every().day.at(random_hour).do(login_bot.login,properties=properties,driver=driver)
 
 
