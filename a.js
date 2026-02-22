@@ -18,16 +18,6 @@ async function createAccount() {
     console.log("  Email:", email);
 
     try {
-        // First check if username is available
-        console.log("Checking username availability...");
-        const usernameCheck = await ig.user.checkUsername(username);
-        console.log("Username available:", usernameCheck.available);
-        
-        if (!usernameCheck.available) {
-            console.log("Username not available, trying another...");
-            return;
-        }
-
         await ig.simulate.preLoginFlow();
         
         console.log("Attempting account creation...");
